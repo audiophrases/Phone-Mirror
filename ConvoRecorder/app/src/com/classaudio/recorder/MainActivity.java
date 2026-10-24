@@ -40,10 +40,10 @@ import java.util.Locale;
 public class MainActivity extends Activity {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private SharedPreferences prefs;
-    private TextView status, levels, jobStatus;
-    private Button recordButton;
+    private TextView status, levels, jobStatus, modelStatus;
+    private Button recordButton, downloadButton;
     private EditText apiKey, baseUrl, model, language;
-    private CheckBox auto;
+    private CheckBox useApi, auto;
     private LinearLayout list;
     private int shownVersion = -1;
     private final Runnable tick = new Runnable() {
@@ -95,11 +95,27 @@ public class MainActivity extends Activity {
         root.addView(help);
 
         root.addView(heading("Transcription"));
-        apiKey = edit(root, "API key", "api_key", "");
+        modelStatus = text(14);
+        root.addView(modelStatus);
+        downloadButton = new Button(this);
+        downloadButton.setText(String.format(Locale.US, "Download speech model (%d MB, use Wi-Fi)", LocalAsr.MODEL_BYTES / 1_000_000));
+        downloadButton.setOnClickListener(v -> startForegroundService(new Intent(this, RecorderService.class)
+                .setAction(RecorderService.ACTION_DOWNLOAD_MODEL)));
+        root.addView(downloadButton);
+        useApi = new CheckBox(this);
+        useApi.setText("Use an online API instead (OpenAI-compatible)");
+        useApi.setChecked(prefs.getBoolean("use_api", false));
+        root.addView(useApi);
+        LinearLayout api = new LinearLayout(this);
+        api.setOrientation(LinearLayout.VERTICAL);
+        apiKey = edit(api, "API key", "api_key", "");
         apiKey.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        baseUrl = edit(root, "API base URL (any OpenAI-compatible server)", "base_url", "https://api.openai.com/v1");
-        model = edit(root, "Model (must return timed segments, e.g. whisper-1)", "model", "whisper-1");
-        language = edit(root, "Language code, blank = detect (en, es, ca…)", "language", "");
+        baseUrl = edit(api, "API base URL", "base_url", "https://api.openai.com/v1");
+        model = edit(api, "Model (must return timed segments, e.g. whisper-1)", "model", "whisper-1");
+        language = edit(api, "Language code, blank = detect", "language", "en");
+        root.addView(api);
+        api.setVisibility(useApi.isChecked() ? View.VISIBLE : View.GONE);
+        useApi.setOnCheckedChangeListener((b, checked) -> api.setVisibility(checked ? View.VISIBLE : View.GONE));
         auto = new CheckBox(this);
         auto.setText("Transcribe automatically when recording stops");
         auto.setChecked(prefs.getBoolean("auto", true));
@@ -143,6 +159,11 @@ public class MainActivity extends Activity {
         jobStatus.setText(RecorderService.jobStatus);
         if (shownVersion != RecorderService.filesVersion) {
             shownVersion = RecorderService.filesVersion;
+            boolean ready = LocalAsr.isReady(this);
+            modelStatus.setText(ready
+                    ? "On-device: NVIDIA Parakeet TDT 0.6B v2 (English) is installed. Nothing leaves the phone."
+                    : "On-device transcription needs a one-time speech model download. Without it, recordings are only transcribed if you choose the online API below.");
+            downloadButton.setVisibility(ready ? View.GONE : View.VISIBLE);
             rebuildList();
         }
     }
@@ -192,7 +213,7 @@ public class MainActivity extends Activity {
 
     private void transcribe(File wav) {
         saveSettings();
-        if (apiKey.getText().toString().trim().isEmpty()) {
+        if (useApi.isChecked() && apiKey.getText().toString().trim().isEmpty()) {
             Toast.makeText(this, "Enter an API key under Transcription first", Toast.LENGTH_LONG).show();
             return;
         }
@@ -245,6 +266,7 @@ public class MainActivity extends Activity {
 
     private void saveSettings() {
         prefs.edit()
+                .putBoolean("use_api", useApi.isChecked())
                 .putString("api_key", apiKey.getText().toString().trim())
                 .putString("base_url", baseUrl.getText().toString().trim())
                 .putString("model", model.getText().toString().trim())

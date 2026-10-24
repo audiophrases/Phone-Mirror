@@ -30,19 +30,22 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * Transcribes a recording through an OpenAI-compatible /audio/transcriptions endpoint. Each channel of
- * the WAV is one speaker (left = mic = Speaker 1, right = ChatGPT = Speaker 2), so speakers are known
- * exactly instead of guessed; the timed segments of both channels are merged into one transcript.
+ * Transcribes a recording, on the phone ({@link LocalAsr}, the default) or through an OpenAI-compatible
+ * /audio/transcriptions endpoint. Each channel of the WAV is one speaker (left = mic = Speaker 1,
+ * right = ChatGPT = Speaker 2), so speakers are known exactly instead of guessed; the timed segments of
+ * both channels are merged into one transcript.
  */
 final class Transcriber {
     interface Progress { void update(String message); }
 
     static final class Settings {
+        boolean useApi;
         String baseUrl, apiKey, model, language;
 
         static Settings load(Context c) {
             SharedPreferences p = c.getSharedPreferences("settings", Context.MODE_PRIVATE);
             Settings s = new Settings();
+            s.useApi = p.getBoolean("use_api", false);
             s.apiKey = p.getString("api_key", "").trim();
             s.baseUrl = p.getString("base_url", "https://api.openai.com/v1").trim();
             s.model = p.getString("model", "whisper-1").trim();
@@ -51,7 +54,7 @@ final class Transcriber {
         }
     }
 
-    private static final class Segment {
+    static final class Segment {
         final int speaker;
         final double start, end;
         final String text;
@@ -60,7 +63,7 @@ final class Transcriber {
         }
     }
 
-    private static final int RATE = 16000;           // what speech models use; 48 kHz would only grow uploads
+    static final int RATE = 16000;                   // what speech models use; 48 kHz would only grow uploads
     private static final int MAX_CHUNK = RATE * 600; // 10 min = 19 MB WAV, under the 25 MB upload limit
     private static final int CUT_SEARCH = RATE * 30; // split long audio at the quietest point of the last 30 s
     private static final int WIN = RATE / 10;        // 100 ms analysis window
@@ -69,14 +72,27 @@ final class Transcriber {
         return new File(wav.getParentFile(), wav.getName().replaceAll("\\.wav$", "") + ".txt");
     }
 
-    static File transcribe(File wav, File cacheDir, Settings s, Progress p) throws Exception {
+    static File transcribe(File wav, Context c, Settings s, Progress p) throws Exception {
+        if (s.useApi && s.apiKey.isEmpty()) throw new IllegalStateException("enter an API key, or switch to on-device transcription");
+        if (!s.useApi && !LocalAsr.isReady(c)) {
+            if (LocalAsr.onMeteredNetwork(c)) throw new IllegalStateException("download the speech model first (on Wi-Fi)");
+            LocalAsr.download(c, p);
+        }
         p.update("preparing audio");
-        File[] mono = { new File(cacheDir, "speaker1.raw"), new File(cacheDir, "speaker2.raw") };
+        File[] mono = { new File(c.getCacheDir(), "speaker1.raw"), new File(c.getCacheDir(), "speaker2.raw") };
         try {
             splitChannels(wav, mono);
             List<Segment> all = new ArrayList<>();
-            all.addAll(transcribeChannel(mono[0], 1, s, p));
-            all.addAll(transcribeChannel(mono[1], 2, s, p));
+            if (s.useApi) {
+                all.addAll(transcribeWithApi(mono[0], 1, s, p));
+                all.addAll(transcribeWithApi(mono[1], 2, s, p));
+            } else {
+                p.update("loading speech model");
+                try (LocalAsr asr = new LocalAsr(c)) {
+                    all.addAll(asr.transcribe(mono[0], 1, p));
+                    all.addAll(asr.transcribe(mono[1], 2, p));
+                }
+            }
             List<Segment> kept = dropEcho(all);
             Collections.sort(kept, (a, b) -> Double.compare(a.start, b.start));
             File out = transcriptFile(wav);
@@ -143,7 +159,7 @@ final class Transcriber {
 
     private static int s16(byte[] b, int i) { return (short) ((b[i] & 0xff) | (b[i + 1] << 8)); }
 
-    private static List<Segment> transcribeChannel(File raw, int speaker, Settings s, Progress p) throws Exception {
+    private static List<Segment> transcribeWithApi(File raw, int speaker, Settings s, Progress p) throws Exception {
         List<Segment> segs = new ArrayList<>();
         String who = speaker == 1 ? "your microphone" : "ChatGPT";
         long total = raw.length() / 2;

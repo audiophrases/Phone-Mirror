@@ -33,7 +33,7 @@ import java.util.concurrent.Executors;
  * staying in the foreground while either is in progress.
  */
 public class RecorderService extends Service {
-    static final String ACTION_START = "start", ACTION_STOP = "stop", ACTION_TRANSCRIBE = "transcribe";
+    static final String ACTION_START = "start", ACTION_STOP = "stop", ACTION_TRANSCRIBE = "transcribe", ACTION_DOWNLOAD_MODEL = "download";
     static final String EXTRA_FILE = "file";
     static final int TAP_PORT = 47810;
     private static final String CHANNEL = "convo";
@@ -47,11 +47,11 @@ public class RecorderService extends Service {
     static volatile int filesVersion;
 
     private final Handler main = new Handler(Looper.getMainLooper());
-    private final ExecutorService transcriber = Executors.newSingleThreadExecutor();
-    private int pendingTranscriptions; // main thread only
+    private final ExecutorService jobs = Executors.newSingleThreadExecutor();
+    private int pendingJobs; // main thread only
     private Thread tapThread;
     private volatile Socket tapSocket;
-    private PowerManager.WakeLock wakeLock;
+    private PowerManager.WakeLock wakeLock, jobWakeLock;
 
     static File dir(Context c) {
         File d = new File(c.getExternalFilesDir(null), "conversations");
@@ -68,6 +68,10 @@ public class RecorderService extends Service {
         if (ACTION_START.equals(action)) startRecording();
         else if (ACTION_STOP.equals(action)) stopRecording();
         else if (ACTION_TRANSCRIBE.equals(action)) enqueue(new File(intent.getStringExtra(EXTRA_FILE)));
+        else if (ACTION_DOWNLOAD_MODEL.equals(action)) enqueue("Speech model", p -> {
+            LocalAsr.download(this, p);
+            return "Speech model ready. Transcription now runs on the phone.";
+        });
         stopIfIdle();
         return START_NOT_STICKY;
     }
@@ -142,27 +146,35 @@ public class RecorderService extends Service {
         updateNotification();
     }
 
+    private interface Job { String run(Transcriber.Progress p) throws Exception; }
+
     private void enqueue(File wav) {
-        pendingTranscriptions++;
         Transcriber.Settings settings = Transcriber.Settings.load(this);
-        jobStatus = wav.getName() + ": queued";
-        transcriber.execute(() -> {
+        enqueue(wav.getName(), p -> "Transcript ready: " + Transcriber.transcribe(wav, this, settings, p).getName());
+    }
+
+    /** Jobs run one at a time, in order, holding the CPU awake so they finish with the screen off. */
+    private void enqueue(String label, Job job) {
+        if (pendingJobs++ == 0) {
+            jobWakeLock = getSystemService(PowerManager.class).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ConvoRecorder:job");
+            jobWakeLock.acquire();
+        }
+        jobStatus = label + ": queued";
+        jobs.execute(() -> {
             String result;
             try {
-                if (settings.apiKey.isEmpty()) throw new IllegalStateException("enter an API key first");
-                File out = Transcriber.transcribe(wav, getCacheDir(), settings, msg -> {
-                    jobStatus = wav.getName() + ": " + msg + "…";
+                result = job.run(msg -> {
+                    jobStatus = label + ": " + msg + "…";
                     main.post(this::updateNotification);
                 });
-                result = "Transcript ready: " + out.getName();
             } catch (Exception e) {
-                result = "Transcription failed (" + wav.getName() + "): " + e.getMessage();
+                result = label + " failed: " + e.getMessage();
             }
             String r = result;
             main.post(() -> {
                 jobStatus = r;
                 filesVersion++;
-                pendingTranscriptions--;
+                if (--pendingJobs == 0) jobWakeLock.release();
                 updateNotification();
                 stopIfIdle();
             });
@@ -170,7 +182,7 @@ public class RecorderService extends Service {
     }
 
     private void stopIfIdle() {
-        if (!recording && pendingTranscriptions == 0) {
+        if (!recording && pendingJobs == 0) {
             stopForeground(STOP_FOREGROUND_REMOVE);
             stopSelf();
         }
@@ -184,13 +196,13 @@ public class RecorderService extends Service {
     }
 
     private void updateNotification() {
-        if (recording || pendingTranscriptions > 0) getSystemService(NotificationManager.class).notify(1, notification());
+        if (recording || pendingJobs > 0) getSystemService(NotificationManager.class).notify(1, notification());
     }
 
     private Notification notification() {
         Notification.Builder b = new Notification.Builder(this, CHANNEL)
                 .setSmallIcon(R.drawable.ic_notification)
-                .setContentTitle(recording ? "Recording ChatGPT conversation" : "Transcribing")
+                .setContentTitle(recording ? "Recording ChatGPT conversation" : "Working")
                 .setContentText(recording ? "Speaker 1 = you, Speaker 2 = ChatGPT" : jobStatus)
                 .setContentIntent(PendingIntent.getActivity(this, 0, new Intent(this, MainActivity.class), PendingIntent.FLAG_IMMUTABLE))
                 .setOngoing(true);
@@ -205,7 +217,7 @@ public class RecorderService extends Service {
     @Override
     public void onDestroy() {
         if (recording) stopRecording();
-        transcriber.shutdown();
+        jobs.shutdown();
         super.onDestroy();
     }
 }
