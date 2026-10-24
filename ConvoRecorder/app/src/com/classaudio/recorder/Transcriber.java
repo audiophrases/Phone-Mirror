@@ -72,6 +72,11 @@ final class Transcriber {
         return new File(wav.getParentFile(), wav.getName().replaceAll("\\.wav$", "") + ".txt");
     }
 
+    /** The same utterances with exact times, for the PinPlay Listening Studio (it cuts each line's audio). */
+    static File segmentsFile(File wav) {
+        return new File(wav.getParentFile(), wav.getName().replaceAll("\\.wav$", "") + ".json");
+    }
+
     static File transcribe(File wav, Context c, Settings s, Progress p) throws Exception {
         if (s.useApi && s.apiKey.isEmpty()) throw new IllegalStateException("enter an API key, or switch to on-device transcription");
         if (!s.useApi && !LocalAsr.isReady(c)) {
@@ -98,6 +103,9 @@ final class Transcriber {
             File out = transcriptFile(wav);
             try (OutputStream o = new FileOutputStream(out)) {
                 o.write(format(wav, kept).getBytes(StandardCharsets.UTF_8));
+            }
+            try (OutputStream o = new FileOutputStream(segmentsFile(wav))) {
+                o.write(segmentsJson(wav, kept).getBytes(StandardCharsets.UTF_8));
             }
             return out;
         } finally {
@@ -320,6 +328,19 @@ final class Transcriber {
         Set<String> set = new HashSet<>();
         for (String w : text.toLowerCase(Locale.ROOT).split("[^\\p{L}\\p{N}']+")) if (!w.isEmpty()) set.add(w);
         return set;
+    }
+
+    /** Every utterance on its own, with start and end in seconds of the WAV (channel = speaker). */
+    private static String segmentsJson(File wav, List<Segment> segs) throws org.json.JSONException {
+        JSONArray arr = new JSONArray();
+        for (Segment s : segs) {
+            arr.put(new JSONObject().put("speaker", s.speaker)
+                    .put("start", Math.round(s.start * 1000) / 1000.0).put("end", Math.round(s.end * 1000) / 1000.0)
+                    .put("text", s.text));
+        }
+        return new JSONObject().put("version", 1).put("recording", wav.getName())
+                .put("speakers", new JSONObject().put("1", "me").put("2", "chatgpt"))
+                .put("segments", arr).toString(1);
     }
 
     /** Consecutive segments of one speaker within a few seconds become one turn. */

@@ -398,6 +398,8 @@ public class MainActivity extends Activity {
     private void share(File wav, File txt) {
         ArrayList<Uri> uris = new ArrayList<>();
         if (txt.exists()) uris.add(ShareProvider.uriFor(txt));
+        File json = Transcriber.segmentsFile(wav);
+        if (json.exists()) uris.add(ShareProvider.uriFor(json)); // for the PinPlay Listening Studio
         uris.add(ShareProvider.uriFor(wav));
         Intent send = new Intent(Intent.ACTION_SEND_MULTIPLE)
                 .setType(txt.exists() ? "*/*" : "audio/wav")
@@ -411,6 +413,7 @@ public class MainActivity extends Activity {
                 .setPositiveButton("Delete", (d, w) -> {
                     wav.delete();
                     txt.delete();
+                    Transcriber.segmentsFile(wav).delete();
                     RecorderService.filesVersion++;
                 })
                 .setNegativeButton("Cancel", null)

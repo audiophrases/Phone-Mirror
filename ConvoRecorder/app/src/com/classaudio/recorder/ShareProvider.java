@@ -34,7 +34,8 @@ public class ShareProvider extends ContentProvider {
     @Override
     public String getType(Uri uri) {
         String name = String.valueOf(uri.getLastPathSegment());
-        return name.endsWith(".wav") ? "audio/wav" : name.endsWith(".txt") ? "text/plain" : "application/octet-stream";
+        return name.endsWith(".wav") ? "audio/wav" : name.endsWith(".txt") ? "text/plain"
+                : name.endsWith(".json") ? "application/json" : "application/octet-stream";
     }
 
     @Override
