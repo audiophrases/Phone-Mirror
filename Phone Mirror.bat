@@ -77,7 +77,7 @@ echo.
 if defined CHATGPT_AUDIO (
     if defined TARGET (adb -s !TARGET! forward tcp:47800 tcp:47800) else (adb -d forward tcp:47800 tcp:47800)
     echo Starting ChatGPT audio receiver. Restart the ChatGPT app on the phone if it was open before the module was enabled.
-    start "ChatGPT audio" /min java "%~dp0ClassAudio\Receiver.java"
+    start "ChatGPT audio" /min java "%~dp0ClassAudioHook\laptop\Receiver.java"
 )
 if defined TARGET (
     echo Starting: scrcpy -s !TARGET! !OPTS!

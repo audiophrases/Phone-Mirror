@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Launcher monochrome artwork cropped to its bounds for the status bar. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp" android:viewportWidth="52" android:viewportHeight="52">
+    <group android:translateX="-29" android:translateY="-29">
+    <path android:fillColor="#FFFFFFFF" android:fillType="evenOdd"
+        android:pathData="M36,34 H54 A6,6 0 0 1 60,40 V50 A6,6 0 0 1 54,56 H43 L33,63 L36,56 A6,6 0 0 1 30,50 V40 A6,6 0 0 1 36,34 Z M38,42h2v6h-2z M42,39h2v12h-2z M46,41h2v8h-2z" />
+    <path android:fillColor="#FFFFFFFF" android:fillType="evenOdd"
+        android:pathData="M54,50 H72 A6,6 0 0 1 78,56 V66 A6,6 0 0 1 72,72 L75,79 L65,72 H54 A6,6 0 0 1 48,66 V56 A6,6 0 0 1 54,50 Z M56,59h2v4h-2z M60,56h2v10h-2z M64,55h2v12h-2z M68,58h2v6h-2z" />
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M74,36 m-5,0 a5,5 0 1 0 10,0 a5,5 0 1 0 -10,0" />
+    </group>
+</vector>
