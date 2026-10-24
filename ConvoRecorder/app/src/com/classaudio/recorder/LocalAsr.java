@@ -24,6 +24,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.security.MessageDigest;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 
@@ -153,6 +154,7 @@ final class LocalAsr implements AutoCloseable {
         return sb.toString();
     }
 
+    private static final int VAD_WINDOW = 512; // 32 ms, what Silero VAD expects at 16 kHz
     private final File dir;
     private final OfflineRecognizer recognizer;
 
@@ -183,7 +185,7 @@ final class LocalAsr implements AutoCloseable {
         sc.setMinSilenceDuration(0.5f); // a shorter pause stays inside the utterance
         sc.setMinSpeechDuration(0.25f);
         sc.setMaxSpeechDuration(30f);
-        sc.setWindowSize(512);
+        sc.setWindowSize(VAD_WINDOW);
         VadModelConfig vc = new VadModelConfig();
         vc.setSileroVadModelConfig(sc);
         vc.setSampleRate(Transcriber.RATE);
@@ -201,8 +203,12 @@ final class LocalAsr implements AutoCloseable {
                 if (n < 2) break;
                 float[] f = new float[n / 2];
                 for (int i = 0; i < f.length; i++) f[i] = (short) ((b[2 * i] & 0xff) | (b[2 * i + 1] << 8)) / 32768f;
-                vad.acceptWaveform(f);
-                drain(vad, speaker, segs);
+                // One VAD window per call: the detector judges each call as a whole and places utterance
+                // boundaries at call granularity, so larger chunks lose the start of speech.
+                for (int i = 0; i < f.length; i += VAD_WINDOW) {
+                    vad.acceptWaveform(Arrays.copyOfRange(f, i, Math.min(f.length, i + VAD_WINDOW)));
+                    drain(vad, speaker, segs);
+                }
                 read += f.length;
                 p.update(String.format(Locale.US, "transcribing %s, %d%%", who, read * 100 / total));
             }

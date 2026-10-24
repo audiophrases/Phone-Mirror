@@ -17,6 +17,10 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.text.InputType;
+import android.text.SpannableStringBuilder;
+import android.text.Spanned;
+import android.text.style.ForegroundColorSpan;
+import android.text.style.StyleSpan;
 import android.util.TypedValue;
 import android.view.View;
 import android.view.WindowInsets;
@@ -24,7 +28,10 @@ import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
 import android.widget.ScrollView;
+import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -34,7 +41,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Locale;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /** Start/stop recording, live levels for both speakers, transcription settings and the list of recordings. */
 public class MainActivity extends Activity {
@@ -45,6 +55,7 @@ public class MainActivity extends Activity {
     private EditText apiKey, baseUrl, model, language;
     private CheckBox useApi, auto;
     private LinearLayout list;
+    private AlertDialog playerDialog;
     private int shownVersion = -1;
     private final Runnable tick = new Runnable() {
         @Override public void run() { refresh(); handler.postDelayed(this, 250); }
@@ -65,6 +76,12 @@ public class MainActivity extends Activity {
         super.onResume();
         shownVersion = -1;
         handler.post(tick);
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (playerDialog != null) playerDialog.dismiss(); // releases the player
+        super.onDestroy();
     }
 
     @Override
@@ -203,6 +220,7 @@ public class MainActivity extends Activity {
             list.addView(title);
             if (live) continue;
             LinearLayout row = new LinearLayout(this);
+            row.addView(button("Play", v -> showPlayer(wav, txt)));
             row.addView(button(txt.exists() ? "Redo" : "Transcribe", v -> transcribe(wav)));
             if (txt.exists()) row.addView(button("Read", v -> showTranscript(txt)));
             row.addView(button("Share", v -> share(wav, txt)));
@@ -240,6 +258,141 @@ public class MainActivity extends Activity {
                         .setPrimaryClip(ClipData.newPlainText("transcript", content)))
                 .setPositiveButton("Close", null)
                 .show();
+    }
+
+    private static final Pattern TURN = Pattern.compile("^\\[(\\d+):(\\d\\d):(\\d\\d)\\] Speaker (\\d): (.*)$");
+    private static final float[] SPEEDS = { 1f, 1.25f, 1.5f, 2f, 0.75f };
+
+    /** Player with speaker solo, seek, speed, and the transcript: tap a line to jump there; the current line is highlighted. */
+    private void showPlayer(File wav, File txt) {
+        Player player;
+        try {
+            player = new Player(wav);
+        } catch (IOException e) {
+            Toast.makeText(this, e.getMessage(), Toast.LENGTH_LONG).show();
+            return;
+        }
+        long duration = player.durationMs();
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(20), dp(8), dp(20), 0);
+
+        TextView time = text(14);
+        time.setTypeface(Typeface.MONOSPACE);
+        box.addView(time);
+        SeekBar seek = new SeekBar(this);
+        seek.setMax((int) duration);
+        boolean[] dragging = { false };
+        seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar s, int p, boolean fromUser) {
+                if (fromUser) time.setText(clock(p) + " / " + clock(duration));
+            }
+            @Override public void onStartTrackingTouch(SeekBar s) { dragging[0] = true; }
+            @Override public void onStopTrackingTouch(SeekBar s) { dragging[0] = false; player.seekMs(s.getProgress()); }
+        });
+        box.addView(seek);
+
+        LinearLayout controls = new LinearLayout(this);
+        controls.addView(button("−10 s", v -> player.seekMs(player.positionMs() - 10_000)));
+        Button playPause = button("Pause", v -> { if (player.isPlaying()) player.pause(); else player.play(); });
+        controls.addView(playPause);
+        controls.addView(button("+10 s", v -> player.seekMs(player.positionMs() + 10_000)));
+        int[] speed = { 0 };
+        controls.addView(button("1×", v -> {
+            speed[0] = (speed[0] + 1) % SPEEDS.length;
+            player.setSpeed(SPEEDS[speed[0]]);
+            ((Button) v).setText(String.format(Locale.US, "%s×", SPEEDS[speed[0]]).replace(".0×", "×"));
+        }));
+        box.addView(controls);
+
+        RadioGroup voices = new RadioGroup(this);
+        voices.setOrientation(LinearLayout.HORIZONTAL);
+        String[] labels = { "Both", "Only me", "Only ChatGPT" };
+        for (int i = 0; i < labels.length; i++) {
+            RadioButton r = new RadioButton(this);
+            r.setId(View.generateViewId());
+            r.setText(labels[i]);
+            r.setTag(i);
+            voices.addView(r);
+            if (i == Player.BOTH) voices.check(r.getId());
+        }
+        voices.setOnCheckedChangeListener((g, id) -> player.setMode((Integer) g.findViewById(id).getTag()));
+        box.addView(voices);
+
+        LinearLayout lines = new LinearLayout(this);
+        lines.setOrientation(LinearLayout.VERTICAL);
+        List<Long> starts = new ArrayList<>();
+        List<TextView> turns = new ArrayList<>();
+        try {
+            for (String line : txt.exists() ? Files.readAllLines(txt.toPath(), StandardCharsets.UTF_8) : new ArrayList<String>()) {
+                Matcher m = TURN.matcher(line);
+                if (!m.matches()) continue;
+                long ms = (Long.parseLong(m.group(1)) * 3600 + Long.parseLong(m.group(2)) * 60 + Long.parseLong(m.group(3))) * 1000;
+                boolean me = m.group(4).equals("1");
+                SpannableStringBuilder sb = new SpannableStringBuilder();
+                sb.append(clock(ms)).append("  ").append(me ? "Me" : "ChatGPT");
+                sb.setSpan(new StyleSpan(Typeface.BOLD), 0, sb.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                if (!me) sb.setSpan(new ForegroundColorSpan(0xFFFFB547), 0, sb.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                sb.append("\n").append(m.group(5));
+                TextView t = text(15);
+                t.setText(sb);
+                t.setPadding(dp(8), dp(8), dp(8), dp(8));
+                t.setOnClickListener(v -> { player.seekMs(Math.max(0, ms - 300)); player.play(); });
+                lines.addView(t);
+                starts.add(ms);
+                turns.add(t);
+            }
+        } catch (IOException ignored) { }
+        if (turns.isEmpty()) {
+            TextView none = text(14);
+            none.setText(txt.exists() ? "No speech in the transcript." : "Not transcribed yet. The transcript will show here, and you can tap a line to jump to it.");
+            lines.addView(none);
+        }
+        ScrollView transcript = new ScrollView(this);
+        transcript.addView(lines);
+        transcript.setLayoutParams(new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                getResources().getDisplayMetrics().heightPixels * 2 / 5));
+        box.addView(transcript);
+
+        int[] current = { -1 };
+        Runnable ticker = new Runnable() {
+            @Override public void run() {
+                long pos = player.positionMs();
+                if (!dragging[0]) {
+                    seek.setProgress((int) pos);
+                    time.setText(clock(pos) + " / " + clock(duration));
+                }
+                playPause.setText(player.isPlaying() ? "Pause" : "Play");
+                int idx = -1;
+                for (int i = 0; i < starts.size() && starts.get(i) <= pos + 300; i++) idx = i;
+                if (idx != current[0]) {
+                    if (current[0] >= 0) turns.get(current[0]).setBackgroundColor(0);
+                    if (idx >= 0) {
+                        TextView t = turns.get(idx);
+                        t.setBackgroundColor(0x3348A0FF);
+                        if (player.isPlaying()) transcript.smoothScrollTo(0, Math.max(0, t.getTop() - dp(24)));
+                    }
+                    current[0] = idx;
+                }
+                handler.postDelayed(this, 200);
+            }
+        };
+        playerDialog = new AlertDialog.Builder(this).setTitle(wav.getName().replace(".wav", ""))
+                .setView(box).setPositiveButton("Close", null).create();
+        playerDialog.setOnDismissListener(d -> {
+            handler.removeCallbacks(ticker);
+            player.release();
+            playerDialog = null;
+        });
+        playerDialog.show();
+        player.play();
+        handler.post(ticker);
+    }
+
+    private static String clock(long ms) {
+        long s = ms / 1000;
+        return s >= 3600 ? String.format(Locale.US, "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60)
+                : String.format(Locale.US, "%d:%02d", s / 60, s % 60);
     }
 
     private void share(File wav, File txt) {
